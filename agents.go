@@ -161,35 +161,108 @@ func confirmCreate(cmd *cli.Command, dir string) bool {
 	return resp == "y" || resp == "yes"
 }
 
-// listAgentDirs scans the selected agents' actual skills dirs and prints what is
-// physically linked there (target + ok/BROKEN), independent of any lockfile.
-func listAgentDirs(cmd *cli.Command) error {
-	global := cmd.Bool("global")
-	for _, a := range resolveAgents(cmd) {
-		dir, err := agentDir(a, global)
-		if err != nil {
-			return err
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			fmt.Printf("# %s  %s  (not present)\n", a, dir)
+type skillEntry struct {
+	name, target string
+	broken       bool
+}
+
+// readSkillDir returns the skill links in dir (present=false if dir is absent).
+func readSkillDir(dir string) (entries []skillEntry, present bool) {
+	des, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, false
+	}
+	for _, e := range des {
+		if e.Name() == "skills.lock.toml" {
 			continue
 		}
-		fmt.Printf("# %s  %s\n", a, dir)
-		for _, e := range entries {
-			if e.Name() == "skills.lock.toml" {
+		full := filepath.Join(dir, e.Name())
+		target, _ := os.Readlink(full) // "" if not a symlink
+		_, statErr := os.Stat(full)
+		entries = append(entries, skillEntry{name: e.Name(), target: target, broken: statErr != nil})
+	}
+	return entries, true
+}
+
+// listResolution shows what each selected agent actually resolves: its search
+// dirs in precedence order (project, then global), with origin and shadowing —
+// the same way the agent itself would find skills.
+func listResolution(cmd *cli.Command) error {
+	projectRoot := findProjectRoot()
+	for _, a := range resolveAgents(cmd) {
+		fmt.Printf("%s\n", a)
+		seen := map[string]bool{} // names already provided by a higher-precedence dir
+
+		type scope struct{ label, dir string }
+		var scopes []scope
+		if projectRoot != "" {
+			if pdir, err := agentProjectDir(a, projectRoot); err == nil {
+				scopes = append(scopes, scope{"project", pdir})
+			}
+		}
+		if gdir, err := agentDir(a, true); err == nil {
+			scopes = append(scopes, scope{"global", gdir})
+		}
+
+		for _, sc := range scopes {
+			entries, present := readSkillDir(sc.dir)
+			if !present {
+				fmt.Printf("  %-7s %s  (not present)\n", sc.label, sc.dir)
 				continue
 			}
-			full := filepath.Join(dir, e.Name())
-			mark := "ok"
-			if _, err := os.Stat(full); err != nil {
-				mark = "BROKEN"
+			fmt.Printf("  %-7s %s\n", sc.label, sc.dir)
+			for _, e := range entries {
+				mark := "ok"
+				if e.broken {
+					mark = "BROKEN"
+				}
+				shadow := ""
+				if seen[e.name] {
+					shadow = "  (shadowed)"
+				}
+				fmt.Printf("    %-26s %-8s %s%s\n", e.name, mark, e.target, shadow)
 			}
-			target, _ := os.Readlink(full) // "" if not a symlink
-			fmt.Printf("%-28s %-8s %s\n", e.Name(), mark, target)
+			for _, e := range entries {
+				seen[e.name] = true
+			}
 		}
 	}
 	return nil
+}
+
+// findProjectRoot returns the nearest ancestor dir containing .git, or "".
+func findProjectRoot() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		if dirExists(filepath.Join(dir, ".git")) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// agentProjectDir resolves an agent's project skills dir relative to projectRoot
+// (rather than the current dir).
+func agentProjectDir(name, projectRoot string) (string, error) {
+	envKey := "GHQ_AGENT_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+	_, p := builtinAgentDirs(name)
+	if v := os.Getenv(envKey + "_PROJECT"); v != "" {
+		p = v
+	}
+	if p == "" {
+		return "", fmt.Errorf("unknown agent %q: set %s_PROJECT", name, envKey)
+	}
+	if filepath.IsAbs(p) {
+		return p, nil
+	}
+	return filepath.Join(projectRoot, p), nil
 }
 
 func splitComma(s string) []string {

@@ -218,18 +218,25 @@ var commandSkillsStatus = &cli.Command{
 
 var commandSkillsList = &cli.Command{
 	Name:  "list",
-	Usage: "List locked skills, or with -a scan an agent's actual skills dir",
+	Usage: "Show skills agents resolve (project -> global); -m for the canonical manifest",
 	Description: `
-    Without -a, lists the resolved lockfile (project lockfile if found by walking
-    up from the current dir, else the global manifest). With -a <agent>, instead
-    scans that agent's real skills dir (project dir, or global with -g) and lists
-    whatever is physically linked there — including links not managed by ghq.`,
-	Flags: append([]cli.Flag{lockfileFlag()}, agentFlags()...),
+    By default, lists what an agent actually loads: each search dir in precedence
+    order — the project dir (e.g. <project>/.claude/skills) then the global dir
+    (~/.claude/skills) — with origin and shadowing. Choose agents with -a (default
+    $GHQ_DEFAULT_AGENT, or 'all').
+
+    Use -m/--manifest to instead dump the canonical lockfile (the installed/pinned
+    set), resolved from a project skills.lock.toml if present, else the global one.`,
+	Flags: append([]cli.Flag{
+		lockfileFlag(),
+		&cli.BoolFlag{Name: "manifest", Aliases: []string{"m"}, Usage: "list the canonical lockfile (installed/pinned set) instead of agent resolution"},
+	}, agentFlags()...),
 	Action: func(ctx context.Context, cmd *cli.Command) error {
-		// -a: scan the agent's actual directory rather than a lockfile.
-		if len(cmd.StringSlice("agent")) > 0 {
-			return listAgentDirs(cmd)
+		// Default: what agents actually resolve (project -> global).
+		if !cmd.Bool("manifest") {
+			return listResolution(cmd)
 		}
+		// -m: the canonical lockfile (installed/pinned set).
 		lock, lockPath, err := loadSkillsLock(cmd)
 		if err != nil {
 			return err

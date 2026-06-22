@@ -36,8 +36,9 @@ ghq skills get owner/repo --skill pdf --skill docx   # lock specific skills by n
 ghq skills add owner/repo                          # `add` is an alias for `get`
 ghq skills update [name]                            # pull, advance the lock
 ghq skills status                                   # show drift behind upstream
-ghq skills list                                     # locked skills (project lockfile if any, else global)
-ghq skills list -a claude-code                       # scan an agent's actual dir (incl. non-ghq links)
+ghq skills list                                     # what the agent resolves: project -> global, with shadowing
+ghq skills list -a all                               # resolution for every agent
+ghq skills list -m                                   # canonical manifest (installed/pinned set) instead
 ghq skills lock                                     # restore clones to pinned commits
 ghq skills restore                                  # clone + pin every locked skill (fresh checkout)
 ghq skills link -a codex                             # wire locked skills into another agent later
@@ -88,8 +89,18 @@ go). When omitted, the lockfile is resolved as:
 3. `$GHQ_SKILLS_ROOT/skills.lock.toml`
 4. `<ghq root>/skills/skills.lock.toml` (global default)
 
-So inside a project that has its own `skills.lock.toml`, every command (including
-`list`) operates on the project set; outside one, on the global manifest.
+So inside a project that has its own `skills.lock.toml`, every command operates on
+the project set; outside one, on the global manifest.
+
+### Two views: resolution vs. manifest
+
+`ghq skills list` answers two different questions:
+
+- **default — resolution:** what an agent actually loads here, scanning its dirs
+  in precedence order (project then global) with shadowing. This reflects the
+  agent's real view, including links not managed by ghq.
+- **`-m`/`--manifest`:** the canonical lockfile — the set you've installed/pinned
+  via ghq (the reproducible SoT), independent of which agent dirs are wired.
 
 ## Team-shared project skills
 
