@@ -71,19 +71,22 @@ func agentDir(name string, global bool) (string, error) {
 }
 
 // resolveAgents decides which agents to fan out to:
-//   --all-agents          -> every supported agent
-//   -a x -a y             -> those agents ("none" alone disables fan-out)
-//   (omitted)             -> $GHQ_DEFAULT_AGENT
+//   -a all      -> every $GHQ_SUPPORTED_AGENTS
+//   -a none     -> none (canonical store only)
+//   -a x -a y   -> those agents
+//   (omitted)   -> $GHQ_DEFAULT_AGENT
 func resolveAgents(cmd *cli.Command) []string {
-	if cmd.Bool("all-agents") {
-		return supportedAgents()
-	}
 	names := cmd.StringSlice("agent")
 	if len(names) == 0 {
 		return []string{defaultAgent()}
 	}
-	if len(names) == 1 && names[0] == "none" {
-		return nil
+	if len(names) == 1 {
+		switch names[0] {
+		case "all":
+			return supportedAgents()
+		case "none":
+			return nil
+		}
 	}
 	return names
 }
@@ -91,8 +94,7 @@ func resolveAgents(cmd *cli.Command) []string {
 // agentFlags are shared by get/restore/link.
 func agentFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringSliceFlag{Name: "agent", Aliases: []string{"a"}, Usage: "also symlink skills into this agent's dir (repeatable; 'none' to skip; default $GHQ_DEFAULT_AGENT)"},
-		&cli.BoolFlag{Name: "all-agents", Usage: "fan out to all $GHQ_SUPPORTED_AGENTS"},
+		&cli.StringSliceFlag{Name: "agent", Aliases: []string{"a"}, Usage: "also symlink skills into this agent's dir (repeatable; 'all' / 'none'; default $GHQ_DEFAULT_AGENT)"},
 		&cli.BoolFlag{Name: "project", Usage: "use the agent's project skills dir (e.g. ./.claude/skills) instead of the global one"},
 	}
 }
