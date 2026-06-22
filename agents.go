@@ -95,7 +95,7 @@ func resolveAgents(cmd *cli.Command) []string {
 func agentFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringSliceFlag{Name: "agent", Aliases: []string{"a"}, Usage: "also symlink skills into this agent's dir (repeatable; 'all' / 'none'; default $GHQ_DEFAULT_AGENT)"},
-		&cli.BoolFlag{Name: "project", Usage: "use the agent's project skills dir (e.g. ./.claude/skills) instead of the global one"},
+		&cli.BoolFlag{Name: "global", Aliases: []string{"g"}, Usage: "use the agent's global skills dir (e.g. ~/.claude/skills); default is the project dir (./.claude/skills)"},
 	}
 }
 
@@ -107,7 +107,7 @@ func fanOutToAgents(cmd *cli.Command, links []skillLink) error {
 	if len(agents) == 0 {
 		return nil
 	}
-	global := !cmd.Bool("project")
+	global := cmd.Bool("global")
 	for _, a := range agents {
 		dir, err := agentDir(a, global)
 		if err != nil {

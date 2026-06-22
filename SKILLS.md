@@ -52,7 +52,7 @@ ghq skills get owner/repo                 # default agent ($GHQ_DEFAULT_AGENT = 
 ghq skills get owner/repo -a codex        # a specific agent (repeatable)
 ghq skills get owner/repo -a all          # every $GHQ_SUPPORTED_AGENTS
 ghq skills get owner/repo -a none         # canonical store only, no agent dirs
-ghq skills get owner/repo -a claude-code --project   # ./.claude/skills instead of ~/.claude/skills
+ghq skills get owner/repo -a claude-code -g          # ~/.claude/skills (global); default is ./.claude/skills
 ghq skills link -a codex                   # add an agent to already-locked skills
 ```
 
