@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mattn/go-isatty"
 	"github.com/urfave/cli/v3"
 )
 
@@ -96,6 +97,7 @@ func agentFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringSliceFlag{Name: "agent", Aliases: []string{"a"}, Usage: "also symlink skills into this agent's dir (repeatable; 'all' / 'none'; default $GHQ_DEFAULT_AGENT)"},
 		&cli.BoolFlag{Name: "global", Aliases: []string{"g"}, Usage: "use the agent's global skills dir (e.g. ~/.claude/skills); default is the project dir (./.claude/skills)"},
+		&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "create a missing project agent dir without prompting"},
 	}
 }
 
@@ -113,6 +115,16 @@ func fanOutToAgents(cmd *cli.Command, links []skillLink) error {
 		if err != nil {
 			return err
 		}
+		// Guardrail: in project scope, if the agent's base dir (e.g. .claude) is
+		// absent, we're probably in the wrong directory — confirm before scattering
+		// a new tree here. Global, --yes, existing dirs, and non-interactive runs
+		// proceed without asking.
+		if !global && !dirExists(dir) && !dirExists(filepath.Dir(dir)) {
+			if !confirmCreate(cmd, dir) {
+				fmt.Printf("skipped %s (%s)\n", dir, a)
+				continue
+			}
+		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
@@ -124,6 +136,29 @@ func fanOutToAgents(cmd *cli.Command, links []skillLink) error {
 		fmt.Printf("wired %d skill(s) -> %s (%s)\n", len(links), dir, a)
 	}
 	return nil
+}
+
+func dirExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
+}
+
+// confirmCreate asks whether to create a missing project agent dir. It returns
+// true on -y, on a non-interactive stdin (don't block automation), or a "y"
+// answer; defaults to false (just Enter).
+func confirmCreate(cmd *cli.Command, dir string) bool {
+	if cmd.Bool("yes") {
+		return true
+	}
+	fd := os.Stdin.Fd()
+	if !isatty.IsTerminal(fd) && !isatty.IsCygwinTerminal(fd) {
+		return true
+	}
+	fmt.Fprintf(os.Stderr, "%s does not exist here. Create it? [y/N] ", dir)
+	var resp string
+	fmt.Scanln(&resp)
+	resp = strings.ToLower(strings.TrimSpace(resp))
+	return resp == "y" || resp == "yes"
 }
 
 func splitComma(s string) []string {

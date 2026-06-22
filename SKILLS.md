@@ -70,6 +70,12 @@ Built-in dirs: claude-code → `~/.claude/skills` / `.claude/skills`; codex →
 and listing it in `GHQ_SUPPORTED_AGENTS`. `restore` also fans out, so teammates
 get their agent dirs wired in one step.
 
+**Guardrail:** in project scope, if the agent's base dir (e.g. `.claude/`) does
+not exist in the current directory, you're likely in the wrong place, so it
+prompts before creating a new tree. It proceeds without asking when the base dir
+already exists, with `-g`/global, with `-y`/`--yes`, or on a non-interactive
+stdin (so CI and scripted `restore` are never blocked).
+
 ### Choosing the lockfile
 
 Every subcommand honors `--lockfile <path>` (its directory is where the symlinks
