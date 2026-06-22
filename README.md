@@ -10,8 +10,9 @@ Every skill stays a **real git clone** under the ghq root, pinned by a lockfile
 full git history, so *"did upstream change?"* is a real `git fetch` + SHA compare,
 and *"reproduce this exact set"* is a real commit pin.
 
-> Base ghq docs (clone/list/get/root/…) are unchanged — see
-> [`README.adoc`](./README.adoc).
+> This is a superset of ghq: the same `ghq` binary, plus `ghq skills`. Base ghq
+> commands (clone/list/get/root/…) are unchanged — see
+> [upstream ghq](https://github.com/x-motemen/ghq#readme).
 
 ---
 
@@ -28,14 +29,32 @@ to install separately) and adds three things on top:
 
 ## Install
 
+Requires Go and `git`. `make install` builds and installs the **`ghq`** binary
+(this fork = ghq + `ghq skills`) into `$GOBIN`, or `$(go env GOPATH)/bin` if unset.
+
+**New users:**
+
 ```sh
-ghq get github.com/orca-studio/ghq-skills
-cd ~/ghq/github.com/orca-studio/ghq-skills
-go build -o ~/go/bin/ghq .      # this binary is ghq + `ghq skills`
+git clone https://github.com/orca-studio/ghq-skills.git
+cd ghq-skills
+make install
 ```
 
-Needs `git` on `$PATH`. To prefer it over a Homebrew ghq: `brew unlink ghq` (the
-`~/go/bin` copy then wins; `brew link ghq` to revert).
+**Existing ghq users** (dogfood ghq to fetch it):
+
+```sh
+ghq get github.com/orca-studio/ghq-skills
+cd "$(ghq root)/github.com/orca-studio/ghq-skills"
+make install
+```
+
+Then make sure the install dir (`$GOBIN` or `$(go env GOPATH)/bin`) is on your
+`$PATH`. Because this binary *is* `ghq`, it replaces your existing ghq and adds the
+`skills` subcommand — verify with `ghq skills --help`.
+
+> Installed ghq via Homebrew? Homebrew's copy may shadow the freshly built one.
+> Run `brew unlink ghq` so the Go-installed binary wins (revert with
+> `brew link ghq`), or put the Go bin dir ahead of `/opt/homebrew/bin` on `$PATH`.
 
 ## Concepts
 
