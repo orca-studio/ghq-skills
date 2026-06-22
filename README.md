@@ -14,6 +14,8 @@ and *"reproduce this exact set"* is a real commit pin.
 > commands (clone/list/get/root/…) are unchanged — see
 > [upstream ghq](https://github.com/x-motemen/ghq#readme).
 
+![ghq skills architecture: GitHub repos are cloned under the ghq root, pinned by skills.lock.toml (the source of truth), and symlinked into project or global agent dirs for claude-code and codex](docs/architecture.png)
+
 ---
 
 ## Why
