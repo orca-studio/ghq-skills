@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/urfave/cli/v3"
 	"github.com/x-motemen/ghq/skills"
@@ -16,15 +17,21 @@ var commandSkills = &cli.Command{
 	Usage: "Manage agent skills cloned under the ghq root",
 	Description: `
     Treat agent skills the ghq way: each skill stays a real git clone under the
-    ghq root, symlinked into <root>/skills, pinned by a committed lockfile
+    ghq root, symlinked into a manifest dir, pinned by a committed lockfile
     (skills.lock.toml). Because the manifest dir has no .git, plain 'ghq list'
-    ignores it. Override the manifest root with GHQ_SKILLS_ROOT.`,
+    ignores it.
+
+    The lockfile is portable (repo + pinned commit, no machine paths), so it can
+    be committed to a project for team-shared skills: commit ./skills.lock.toml,
+    and teammates run 'ghq skills restore' to reproduce the exact set. Choose the
+    lockfile with --lockfile, or drop a skills.lock.toml in the project dir.`,
 	Commands: []*cli.Command{
 		commandSkillsGet,
 		commandSkillsUpdate,
 		commandSkillsStatus,
 		commandSkillsList,
 		commandSkillsLock,
+		commandSkillsRestore,
 	},
 }
 
@@ -39,6 +46,7 @@ var commandSkillsGet = &cli.Command{
 		&cli.BoolFlag{Name: "list", Aliases: []string{"l"}, Usage: "list available skills in the repo without locking"},
 		&cli.BoolFlag{Name: "update", Aliases: []string{"u"}, Usage: "pull if the repo is already cloned"},
 		&cli.BoolFlag{Name: "p", Usage: "clone with SSH"},
+		lockfileFlag(),
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		source := cmd.Args().First()
@@ -90,7 +98,7 @@ var commandSkillsGet = &cli.Command{
 			}
 		}
 
-		lock, lockPath, err := loadSkillsLock()
+		lock, lockPath, err := loadSkillsLock(cmd)
 		if err != nil {
 			return err
 		}
@@ -113,8 +121,9 @@ var commandSkillsUpdate = &cli.Command{
 	Name:      "update",
 	Usage:     "Pull upstream for locked skills and advance the lock",
 	ArgsUsage: "[name]",
+	Flags:     []cli.Flag{lockfileFlag()},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
-		lock, lockPath, err := loadSkillsLock()
+		lock, lockPath, err := loadSkillsLock(cmd)
 		if err != nil {
 			return err
 		}
@@ -163,9 +172,10 @@ var commandSkillsStatus = &cli.Command{
 	Usage: "Show how far each locked skill has drifted behind upstream",
 	Flags: []cli.Flag{
 		&cli.BoolFlag{Name: "no-fetch", Usage: "compare without fetching (use cached refs)"},
+		lockfileFlag(),
 	},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
-		lock, _, err := loadSkillsLock()
+		lock, _, err := loadSkillsLock(cmd)
 		if err != nil {
 			return err
 		}
@@ -201,10 +211,11 @@ var commandSkillsStatus = &cli.Command{
 }
 
 var commandSkillsList = &cli.Command{
-	Name:  "list",
-	Usage: "List locked skills and flag broken symlinks",
+	Name:   "list",
+	Usage:  "List locked skills and flag broken symlinks",
+	Flags:  []cli.Flag{lockfileFlag()},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
-		lock, lockPath, err := loadSkillsLock()
+		lock, lockPath, err := loadSkillsLock(cmd)
 		if err != nil {
 			return err
 		}
@@ -229,10 +240,11 @@ var commandSkillsList = &cli.Command{
 }
 
 var commandSkillsLock = &cli.Command{
-	Name:  "lock",
-	Usage: "Check out each clone at its pinned commit (restore locked state)",
+	Name:   "lock",
+	Usage:  "Check out each clone at its pinned commit (restore locked state)",
+	Flags:  []cli.Flag{lockfileFlag()},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
-		lock, _, err := loadSkillsLock()
+		lock, _, err := loadSkillsLock(cmd)
 		if err != nil {
 			return err
 		}
@@ -260,20 +272,115 @@ var commandSkillsLock = &cli.Command{
 	},
 }
 
-// loadSkillsLock resolves the manifest root (<ghq root>/skills, or
-// GHQ_SKILLS_ROOT) and loads its lockfile.
-func loadSkillsLock() (*skills.Lock, string, error) {
-	root := os.Getenv("GHQ_SKILLS_ROOT")
-	if root == "" {
-		base, err := primaryLocalRepositoryRoot()
+var commandSkillsRestore = &cli.Command{
+	Name:  "restore",
+	Usage: "Clone and pin every skill in the lockfile to its locked commit",
+	Description: `
+    Reproduce the exact skill set recorded in a lockfile — for fresh checkouts
+    and teammates. For each entry it clones the repo if missing, checks it out at
+    the pinned commit (never advancing it, unlike 'update'), and recreates the
+    symlink in the lockfile's directory. Idempotent.`,
+	Flags: []cli.Flag{lockfileFlag()},
+	Action: func(ctx context.Context, cmd *cli.Command) error {
+		lock, lockPath, err := loadSkillsLock(cmd)
 		if err != nil {
-			return nil, "", err
+			return err
 		}
-		root = filepath.Join(base, "skills")
+		if len(lock.Skill) == 0 {
+			return fmt.Errorf("no skills in %s", lockPath)
+		}
+		root := filepath.Dir(lockPath)
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			return err
+		}
+		cloned := map[string]string{} // clone once per repo
+		for _, s := range lock.Skill {
+			path, ok := cloned[s.Repo]
+			if !ok {
+				// Clone if missing; do NOT update (we want the pinned commit).
+				g := &getter{recursive: true}
+				info, err := g.get(ctx, s.Repo)
+				if err != nil {
+					return err
+				}
+				path = info.localRepository.FullPath
+				cloned[s.Repo] = path
+			}
+			// Pin to the locked commit, fetching first if it isn't present yet.
+			if err := skills.Checkout(path, s.Locked); err != nil {
+				_ = skills.Fetch(path)
+				if err := skills.Checkout(path, s.Locked); err != nil {
+					return fmt.Errorf("%s: checkout %s: %w", s.Repo, shortSHA(s.Locked), err)
+				}
+			}
+			if err := symlinkForce(filepath.Join(path, s.Subdir), filepath.Join(root, s.Link)); err != nil {
+				return err
+			}
+			fmt.Printf("restored %-24s @ %s\n", s.Name, shortSHA(s.Locked))
+		}
+		fmt.Printf("\n%d skills restored into %s\n", len(lock.Skill), root)
+		return nil
+	},
+}
+
+// lockfileFlag is shared by every skills subcommand so they all honor an
+// explicit or project-local lockfile.
+func lockfileFlag() cli.Flag {
+	return &cli.StringFlag{
+		Name:    "lockfile",
+		Aliases: []string{"f"},
+		Usage:   "path to skills.lock.toml; its directory holds the symlinks (default: ./skills.lock.toml if present, else <ghq root>/skills/skills.lock.toml)",
 	}
-	lockPath := filepath.Join(root, "skills.lock.toml")
+}
+
+// loadSkillsLock resolves which lockfile to use and loads it. Resolution order:
+//  1. --lockfile <path>
+//  2. ./skills.lock.toml in the current dir (project-local)
+//  3. $GHQ_SKILLS_ROOT/skills.lock.toml
+//  4. <primary ghq root>/skills/skills.lock.toml (global default)
+//
+// The manifest root (where symlinks live) is always the lockfile's directory.
+func loadSkillsLock(cmd *cli.Command) (*skills.Lock, string, error) {
+	lockPath, err := resolveLockPath(cmd)
+	if err != nil {
+		return nil, "", err
+	}
 	lock, err := skills.LoadLock(lockPath)
 	return lock, lockPath, err
+}
+
+func resolveLockPath(cmd *cli.Command) (string, error) {
+	if f := cmd.String("lockfile"); f != "" {
+		abs, err := filepath.Abs(expandHome(f))
+		if err != nil {
+			return "", err
+		}
+		return abs, nil
+	}
+	if local := "skills.lock.toml"; fileExists(local) {
+		return filepath.Abs(local)
+	}
+	if root := os.Getenv("GHQ_SKILLS_ROOT"); root != "" {
+		return filepath.Join(expandHome(root), "skills.lock.toml"), nil
+	}
+	base, err := primaryLocalRepositoryRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "skills", "skills.lock.toml"), nil
+}
+
+func expandHome(p string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
+	}
+	return p
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 // skillRepoPath resolves a locked repo's local clone path without cloning,
