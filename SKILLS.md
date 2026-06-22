@@ -36,7 +36,8 @@ ghq skills get owner/repo --skill pdf --skill docx   # lock specific skills by n
 ghq skills add owner/repo                          # `add` is an alias for `get`
 ghq skills update [name]                            # pull, advance the lock
 ghq skills status                                   # show drift behind upstream
-ghq skills list                                     # locked skills + broken-link check
+ghq skills list                                     # locked skills (project lockfile if any, else global)
+ghq skills list -a claude-code                       # scan an agent's actual dir (incl. non-ghq links)
 ghq skills lock                                     # restore clones to pinned commits
 ghq skills restore                                  # clone + pin every locked skill (fresh checkout)
 ghq skills link -a codex                             # wire locked skills into another agent later
@@ -82,9 +83,13 @@ Every subcommand honors `--lockfile <path>` (its directory is where the symlinks
 go). When omitted, the lockfile is resolved as:
 
 1. `--lockfile <path>`
-2. `./skills.lock.toml` in the current dir (project-local)
+2. a `skills.lock.toml` found by walking up from the current dir to the git
+   project root (project-local)
 3. `$GHQ_SKILLS_ROOT/skills.lock.toml`
 4. `<ghq root>/skills/skills.lock.toml` (global default)
+
+So inside a project that has its own `skills.lock.toml`, every command (including
+`list`) operates on the project set; outside one, on the global manifest.
 
 ## Team-shared project skills
 

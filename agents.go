@@ -161,6 +161,37 @@ func confirmCreate(cmd *cli.Command, dir string) bool {
 	return resp == "y" || resp == "yes"
 }
 
+// listAgentDirs scans the selected agents' actual skills dirs and prints what is
+// physically linked there (target + ok/BROKEN), independent of any lockfile.
+func listAgentDirs(cmd *cli.Command) error {
+	global := cmd.Bool("global")
+	for _, a := range resolveAgents(cmd) {
+		dir, err := agentDir(a, global)
+		if err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			fmt.Printf("# %s  %s  (not present)\n", a, dir)
+			continue
+		}
+		fmt.Printf("# %s  %s\n", a, dir)
+		for _, e := range entries {
+			if e.Name() == "skills.lock.toml" {
+				continue
+			}
+			full := filepath.Join(dir, e.Name())
+			mark := "ok"
+			if _, err := os.Stat(full); err != nil {
+				mark = "BROKEN"
+			}
+			target, _ := os.Readlink(full) // "" if not a symlink
+			fmt.Printf("%-28s %-8s %s\n", e.Name(), mark, target)
+		}
+	}
+	return nil
+}
+
 func splitComma(s string) []string {
 	var out []string
 	for _, p := range strings.Split(s, ",") {

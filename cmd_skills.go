@@ -217,10 +217,19 @@ var commandSkillsStatus = &cli.Command{
 }
 
 var commandSkillsList = &cli.Command{
-	Name:   "list",
-	Usage:  "List locked skills and flag broken symlinks",
-	Flags:  []cli.Flag{lockfileFlag()},
+	Name:  "list",
+	Usage: "List locked skills, or with -a scan an agent's actual skills dir",
+	Description: `
+    Without -a, lists the resolved lockfile (project lockfile if found by walking
+    up from the current dir, else the global manifest). With -a <agent>, instead
+    scans that agent's real skills dir (project dir, or global with -g) and lists
+    whatever is physically linked there — including links not managed by ghq.`,
+	Flags: append([]cli.Flag{lockfileFlag()}, agentFlags()...),
 	Action: func(ctx context.Context, cmd *cli.Command) error {
+		// -a: scan the agent's actual directory rather than a lockfile.
+		if len(cmd.StringSlice("agent")) > 0 {
+			return listAgentDirs(cmd)
+		}
 		lock, lockPath, err := loadSkillsLock(cmd)
 		if err != nil {
 			return err
@@ -403,8 +412,8 @@ func resolveLockPath(cmd *cli.Command) (string, error) {
 		}
 		return abs, nil
 	}
-	if local := "skills.lock.toml"; fileExists(local) {
-		return filepath.Abs(local)
+	if p := findProjectLock(); p != "" {
+		return p, nil
 	}
 	if root := os.Getenv("GHQ_SKILLS_ROOT"); root != "" {
 		return filepath.Join(expandHome(root), "skills.lock.toml"), nil
@@ -414,6 +423,29 @@ func resolveLockPath(cmd *cli.Command) (string, error) {
 		return "", err
 	}
 	return filepath.Join(base, "skills", "skills.lock.toml"), nil
+}
+
+// findProjectLock walks up from the current dir looking for a project-local
+// skills.lock.toml, stopping at the git project root so it never escapes the
+// repo. Returns "" if none is found.
+func findProjectLock() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		if cand := filepath.Join(dir, "skills.lock.toml"); fileExists(cand) {
+			return cand
+		}
+		if dirExists(filepath.Join(dir, ".git")) {
+			return "" // reached the project root with no lockfile
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 func expandHome(p string) string {
