@@ -32,6 +32,7 @@ var commandSkills = &cli.Command{
 		commandSkillsList,
 		commandSkillsLock,
 		commandSkillsRestore,
+		commandSkillsLink,
 	},
 }
 
@@ -40,14 +41,14 @@ var commandSkillsGet = &cli.Command{
 	Aliases:   []string{"add"},
 	Usage:     "Clone a skill repo, link it into the manifest root, and lock it",
 	ArgsUsage: "<source>",
-	Flags: []cli.Flag{
+	Flags: append([]cli.Flag{
 		&cli.StringSliceFlag{Name: "skill", Aliases: []string{"s"}, Usage: "select skills by name (repeatable; '*' = all). Default: all"},
 		&cli.StringFlag{Name: "subdir", Usage: "select the skill at this subdir (disambiguates odd layouts)"},
 		&cli.BoolFlag{Name: "list", Aliases: []string{"l"}, Usage: "list available skills in the repo without locking"},
 		&cli.BoolFlag{Name: "update", Aliases: []string{"u"}, Usage: "pull if the repo is already cloned"},
 		&cli.BoolFlag{Name: "p", Usage: "clone with SSH"},
 		lockfileFlag(),
-	},
+	}, agentFlags()...),
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		source := cmd.Args().First()
 		if source == "" {
@@ -106,14 +107,19 @@ var commandSkillsGet = &cli.Command{
 		if err := os.MkdirAll(root, 0o755); err != nil {
 			return err
 		}
+		var links []skillLink
 		for _, f := range found {
 			if err := symlinkForce(f.Dir, filepath.Join(root, f.Name)); err != nil {
 				return err
 			}
 			lock.Upsert(skills.Skill{Name: f.Name, Repo: repo, Subdir: f.Subdir, Locked: sha, Link: f.Name})
+			links = append(links, skillLink{name: f.Name, target: f.Dir})
 			fmt.Printf("linked %-24s -> %s @ %s\n", f.Name, f.Dir, shortSHA(sha))
 		}
-		return lock.Save(lockPath)
+		if err := lock.Save(lockPath); err != nil {
+			return err
+		}
+		return fanOutToAgents(cmd, links)
 	},
 }
 
@@ -280,7 +286,7 @@ var commandSkillsRestore = &cli.Command{
     and teammates. For each entry it clones the repo if missing, checks it out at
     the pinned commit (never advancing it, unlike 'update'), and recreates the
     symlink in the lockfile's directory. Idempotent.`,
-	Flags: []cli.Flag{lockfileFlag()},
+	Flags: append(agentFlags(), lockfileFlag()),
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		lock, lockPath, err := loadSkillsLock(cmd)
 		if err != nil {
@@ -293,6 +299,7 @@ var commandSkillsRestore = &cli.Command{
 		if err := os.MkdirAll(root, 0o755); err != nil {
 			return err
 		}
+		var links []skillLink
 		cloned := map[string]string{} // clone once per repo
 		for _, s := range lock.Skill {
 			path, ok := cloned[s.Repo]
@@ -313,13 +320,52 @@ var commandSkillsRestore = &cli.Command{
 					return fmt.Errorf("%s: checkout %s: %w", s.Repo, shortSHA(s.Locked), err)
 				}
 			}
-			if err := symlinkForce(filepath.Join(path, s.Subdir), filepath.Join(root, s.Link)); err != nil {
+			target := filepath.Join(path, s.Subdir)
+			if err := symlinkForce(target, filepath.Join(root, s.Link)); err != nil {
 				return err
 			}
+			links = append(links, skillLink{name: s.Link, target: target})
 			fmt.Printf("restored %-24s @ %s\n", s.Name, shortSHA(s.Locked))
 		}
 		fmt.Printf("\n%d skills restored into %s\n", len(lock.Skill), root)
-		return nil
+		return fanOutToAgents(cmd, links)
+	},
+}
+
+var commandSkillsLink = &cli.Command{
+	Name:  "link",
+	Usage: "(Re)create symlinks for locked skills into agent dirs (and the manifest root)",
+	Description: `
+    Wire already-locked skills into one or more agents without re-cloning. Use it
+    to add an agent later (e.g. 'ghq skills link -a codex') or to repair links.`,
+	Flags: append(agentFlags(), lockfileFlag()),
+	Action: func(ctx context.Context, cmd *cli.Command) error {
+		lock, lockPath, err := loadSkillsLock(cmd)
+		if err != nil {
+			return err
+		}
+		if len(lock.Skill) == 0 {
+			fmt.Println("no skills locked")
+			return nil
+		}
+		root := filepath.Dir(lockPath)
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			return err
+		}
+		var links []skillLink
+		for _, s := range lock.Skill {
+			path, err := skillRepoPath(s.Repo)
+			if err != nil {
+				fmt.Printf("%-24s MISSING (%v)\n", s.Name, err)
+				continue
+			}
+			target := filepath.Join(path, s.Subdir)
+			if err := symlinkForce(target, filepath.Join(root, s.Link)); err != nil {
+				return err
+			}
+			links = append(links, skillLink{name: s.Link, target: target})
+		}
+		return fanOutToAgents(cmd, links)
 	},
 }
 

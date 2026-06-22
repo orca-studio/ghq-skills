@@ -39,7 +39,36 @@ ghq skills status                                   # show drift behind upstream
 ghq skills list                                     # locked skills + broken-link check
 ghq skills lock                                     # restore clones to pinned commits
 ghq skills restore                                  # clone + pin every locked skill (fresh checkout)
+ghq skills link -a codex                             # wire locked skills into another agent later
 ```
+
+### Targeting agents (claude-code, codex, …)
+
+Skills always live in the canonical manifest root. `--agent`/`-a` *additionally*
+symlinks them into an agent's own skills dir (augment, not replace):
+
+```sh
+ghq skills get owner/repo                 # default agent ($GHQ_DEFAULT_AGENT = claude-code)
+ghq skills get owner/repo -a codex        # a specific agent
+ghq skills get owner/repo --all-agents    # every $GHQ_SUPPORTED_AGENTS
+ghq skills get owner/repo -a none         # canonical store only, no agent dirs
+ghq skills get owner/repo -a claude-code --project   # ./.claude/skills instead of ~/.claude/skills
+ghq skills link -a codex                   # add an agent to already-locked skills
+```
+
+Config (env):
+
+| Var | Default | Meaning |
+|---|---|---|
+| `GHQ_SUPPORTED_AGENTS` | `claude-code,codex` | agents for `--all-agents` |
+| `GHQ_DEFAULT_AGENT` | `claude-code` | used when `-a` is omitted |
+| `GHQ_AGENT_<NAME>` | built-in for the two above | that agent's **global** skills dir |
+| `GHQ_AGENT_<NAME>_PROJECT` | built-in | that agent's **project** skills dir |
+
+Built-in dirs: claude-code → `~/.claude/skills` / `.claude/skills`; codex →
+`~/.codex/skills` / `.codex/skills`. Add any other agent by setting its env vars
+and listing it in `GHQ_SUPPORTED_AGENTS`. `restore` also fans out, so teammates
+get their agent dirs wired in one step.
 
 ### Choosing the lockfile
 
