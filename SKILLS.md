@@ -1,28 +1,37 @@
 # `ghq skills` — agent skill management, the ghq way
 
 This fork adds a `skills` subcommand to ghq. Every skill stays a real git clone
-under the ghq root; a committed lockfile (`skills.lock.toml`) pins each skill to
-an upstream commit, and symlinks expose them in one manifest dir.
+under the ghq root; a lockfile (`skills.lock.toml`) pins each skill to an upstream
+commit, and symlinks expose them in agents' skills dirs.
 
 Unlike `npx skills` (which packages content and records an md5 checksum), this
 keeps full git history — so "did upstream change?" is a real `git fetch` + SHA
 compare, not a hash mismatch.
 
-## Layout
+## Scope: project vs. global
 
-Everything lives under one tree — the ghq root:
+Commands operate in one of two scopes; `-g`/`--global` selects global, otherwise
+the project is used when you're inside a git repo:
+
+| | lockfile | skills materialize into | canonical store |
+|---|---|---|---|
+| **project** (default in a repo) | `<repo>/skills.lock.toml` | `<repo>/.claude/skills`, … | — |
+| **global** (`-g`, or outside a repo) | `<ghq root>/skills/skills.lock.toml` | `~/.claude/skills`, … | `<ghq root>/skills/` |
+| **`--lockfile <p>`** | `<p>` | agent dirs | `<p>`'s dir |
+
+In **project** scope the repo root holds only the lockfile (commit it); skills are
+wired straight into the project's agent dirs. In **global** scope a canonical
+symlink store also lives under `<ghq root>/skills` (no `.git`, so `ghq list`/`rm`
+ignore it; override with `GHQ_SKILLS_ROOT`).
 
 ```
 ~/ghq/                                      # ghq root (GHQ_ROOT)
 ├─ github.com/<owner>/<repo>/...            # real clones (ghq owns)
 │         └─ skills/foo/SKILL.md
-└─ skills/                                  # manifest root — no .git
-          ├─ skills.lock.toml               # the manifest you commit
+└─ skills/                                  # global store + global lockfile
+          ├─ skills.lock.toml
           └─ foo -> ../github.com/<owner>/<repo>/skills/foo
 ```
-
-The manifest root has no `.git`, so plain `ghq list` / `ghq rm` ignore it.
-Override it with `GHQ_SKILLS_ROOT`.
 
 ## Usage
 
@@ -36,26 +45,26 @@ ghq skills get owner/repo --skill pdf --skill docx   # lock specific skills by n
 ghq skills add owner/repo                          # `add` is an alias for `get`
 ghq skills update [name]                            # pull, advance the lock
 ghq skills status                                   # show drift behind upstream
-ghq skills list                                     # what the agent resolves: project -> global, with shadowing
-ghq skills list -a all                               # resolution for every agent
-ghq skills list -m                                   # canonical manifest (installed/pinned set) instead
+ghq skills list                                     # skills wired into an agent's dir at the project scope
+ghq skills list -g                                   # global scope (~/.claude/skills), even inside a repo
+ghq skills manifest                                  # canonical manifest (installed/pinned set)
 ghq skills lock                                     # restore clones to pinned commits
 ghq skills restore                                  # clone + pin every locked skill (fresh checkout)
-ghq skills link -a codex                             # wire locked skills into another agent later
+ghq skills restore --wire-only -a codex             # just (re)wire links for another agent; no clone/checkout
 ```
 
 ### Targeting agents (claude-code, codex, …)
 
-Skills always live in the canonical manifest root. `--agent`/`-a` *additionally*
-symlinks them into an agent's own skills dir (augment, not replace):
+`--agent`/`-a` chooses which agents' skills dirs to wire (at the current scope —
+project dirs unless `-g`):
 
 ```sh
 ghq skills get owner/repo                 # default agent ($GHQ_DEFAULT_AGENT = claude-code)
 ghq skills get owner/repo -a codex        # a specific agent (repeatable)
 ghq skills get owner/repo -a all          # every $GHQ_SUPPORTED_AGENTS
-ghq skills get owner/repo -a none         # canonical store only, no agent dirs
-ghq skills get owner/repo -a claude-code -g          # ~/.claude/skills (global); default is ./.claude/skills
-ghq skills link -a codex                   # add an agent to already-locked skills
+ghq skills get owner/repo -a none         # lockfile only, no agent dirs
+ghq skills get owner/repo -g              # global scope: ~/.claude/skills + global store
+ghq skills restore --wire-only -a codex   # wire already-locked skills into another agent
 ```
 
 Config (env):
@@ -80,27 +89,23 @@ stdin (so CI and scripted `restore` are never blocked).
 
 ### Choosing the lockfile
 
-Every subcommand honors `--lockfile <path>` (its directory is where the symlinks
-go). When omitted, the lockfile is resolved as:
+The lockfile follows the scope (see above): the project's `<repo>/skills.lock.toml`
+by default inside a repo, the global one with `-g` or outside a repo. `--lockfile
+<path>` overrides both. So `list`/`manifest`/`status` inside a project report the
+project set; add `-g` to see the global set.
 
-1. `--lockfile <path>`
-2. a `skills.lock.toml` found by walking up from the current dir to the git
-   project root (project-local)
-3. `$GHQ_SKILLS_ROOT/skills.lock.toml`
-4. `<ghq root>/skills/skills.lock.toml` (global default)
+### Two views: wired vs. manifest
 
-So inside a project that has its own `skills.lock.toml`, every command operates on
-the project set; outside one, on the global manifest.
+Two commands answer two different questions:
 
-### Two views: resolution vs. manifest
+- **`ghq skills list` — what's wired:** the skills physically in an agent's dir at
+  one scope (project by default, global with `-g`). Reflects the agent's real
+  view at that scope, including links not managed by ghq. `-a` picks agents.
+- **`ghq skills manifest`:** the canonical lockfile — the set you've installed/
+  pinned via ghq (the reproducible SoT), independent of which agent dirs are wired.
 
-`ghq skills list` answers two different questions:
-
-- **default — resolution:** what an agent actually loads here, scanning its dirs
-  in precedence order (project then global) with shadowing. This reflects the
-  agent's real view, including links not managed by ghq.
-- **`-m`/`--manifest`:** the canonical lockfile — the set you've installed/pinned
-  via ghq (the reproducible SoT), independent of which agent dirs are wired.
+Note `list` shows a single scope (consistent with `-g` everywhere): to see global
+skills run `list -g`, even inside a repo.
 
 ## Team-shared project skills
 
@@ -108,25 +113,23 @@ The lockfile is portable (repo + pinned commit, no machine paths), so commit it
 to a project and teammates reproduce the exact set with `restore`:
 
 ```sh
-# you, once — author a project lockfile and commit it:
-ghq skills get larksuite/cli --skill lark-base --skill lark-doc \
-    --lockfile ./.claude/skills/skills.lock.toml
-git add .claude/skills/skills.lock.toml && git commit -m "pin agent skills"
+# you, once — inside the repo, project scope is the default:
+ghq skills get larksuite/cli --skill lark-base --skill lark-doc
+git add skills.lock.toml && git commit -m "pin agent skills"
 
 # teammate, after cloning the project — reproduce at the pinned commits:
-ghq skills restore --lockfile ./.claude/skills/skills.lock.toml
+ghq skills restore
 ```
 
 `restore` clones each repo into the teammate's own ghq root, checks out the
-**pinned** commit (it never advances the lock, unlike `update`), and recreates
-the symlinks. Commit the lockfile, not the symlinks — the symlinks point into
-each person's ghq root and are regenerated by `restore`:
+**pinned** commit (it never advances the lock, unlike `update`), and wires the
+project agent dirs. Commit the lockfile, not the symlinks — the agent dirs point
+into each person's ghq root and are regenerated by `restore`:
 
 ```gitignore
-# .claude/skills/.gitignore
+# .claude/skills/.gitignore  (and .codex/skills/.gitignore)
 *
 !.gitignore
-!skills.lock.toml
 ```
 
 ## Design

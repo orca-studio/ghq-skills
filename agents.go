@@ -92,26 +92,43 @@ func resolveAgents(cmd *cli.Command) []string {
 	return names
 }
 
-// agentFlags are shared by get/restore/link.
+// agentSelectFlag picks which agents to act on; shared by the fan-out commands
+// and list.
+func agentSelectFlag() cli.Flag {
+	return &cli.StringSliceFlag{Name: "agent", Aliases: []string{"a"}, Usage: "agent(s) to act on (repeatable; 'all' / 'none'; default $GHQ_DEFAULT_AGENT)"}
+}
+
+// agentFlags are shared by get/update/restore/link.
 func agentFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringSliceFlag{Name: "agent", Aliases: []string{"a"}, Usage: "also symlink skills into this agent's dir (repeatable; 'all' / 'none'; default $GHQ_DEFAULT_AGENT)"},
-		&cli.BoolFlag{Name: "global", Aliases: []string{"g"}, Usage: "use the agent's global skills dir (e.g. ~/.claude/skills); default is the project dir (./.claude/skills)"},
+		agentSelectFlag(),
+		globalFlag(),
 		&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "create a missing project agent dir without prompting"},
 	}
 }
 
 type skillLink struct{ name, target string }
 
-// fanOutToAgents creates symlinks for each skill in each selected agent's dir.
-func fanOutToAgents(cmd *cli.Command, links []skillLink) error {
+// fanOutToAgents creates symlinks for each skill in each selected agent's dir,
+// resolved at the invocation's scope (project dirs unless global).
+func fanOutToAgents(cmd *cli.Command, sc scope, links []skillLink) error {
 	agents := resolveAgents(cmd)
 	if len(agents) == 0 {
 		return nil
 	}
-	global := cmd.Bool("global")
 	for _, a := range agents {
-		dir, err := agentDir(a, global)
+		var (
+			dir string
+			err error
+		)
+		switch {
+		case sc.agentGlobal:
+			dir, err = agentDir(a, true)
+		case sc.projectRoot != "":
+			dir, err = agentProjectDir(a, sc.projectRoot)
+		default:
+			dir, err = agentDir(a, false)
+		}
 		if err != nil {
 			return err
 		}
@@ -119,7 +136,7 @@ func fanOutToAgents(cmd *cli.Command, links []skillLink) error {
 		// absent, we're probably in the wrong directory — confirm before scattering
 		// a new tree here. Global, --yes, existing dirs, and non-interactive runs
 		// proceed without asking.
-		if !global && !dirExists(dir) && !dirExists(filepath.Dir(dir)) {
+		if !sc.agentGlobal && !dirExists(dir) && !dirExists(filepath.Dir(dir)) {
 			if !confirmCreate(cmd, dir) {
 				fmt.Printf("skipped %s (%s)\n", dir, a)
 				continue
@@ -188,47 +205,42 @@ func readSkillDir(dir string) (entries []skillEntry, present bool) {
 	return entries, true
 }
 
-// listResolution shows what each selected agent actually resolves: its search
-// dirs in precedence order (project, then global), with origin and shadowing —
-// the same way the agent itself would find skills.
-func listResolution(cmd *cli.Command) error {
-	projectRoot := findProjectRoot()
+// listAgents lists the skills wired into the selected agents' dir at one scope —
+// project by default, global with -g — the way an agent loads from that scope.
+func listAgents(cmd *cli.Command) error {
+	sc, err := resolveScope(cmd)
+	if err != nil {
+		return err
+	}
 	for _, a := range resolveAgents(cmd) {
-		fmt.Printf("%s\n", a)
-		seen := map[string]bool{} // names already provided by a higher-precedence dir
-
-		type scope struct{ label, dir string }
-		var scopes []scope
-		if projectRoot != "" {
-			if pdir, err := agentProjectDir(a, projectRoot); err == nil {
-				scopes = append(scopes, scope{"project", pdir})
-			}
+		var dir string
+		switch {
+		case sc.agentGlobal:
+			dir, err = agentDir(a, true)
+		case sc.projectRoot != "":
+			dir, err = agentProjectDir(a, sc.projectRoot)
+		default:
+			dir, err = agentDir(a, false)
 		}
-		if gdir, err := agentDir(a, true); err == nil {
-			scopes = append(scopes, scope{"global", gdir})
+		if err != nil {
+			return err
 		}
-
-		for _, sc := range scopes {
-			entries, present := readSkillDir(sc.dir)
-			if !present {
-				fmt.Printf("  %-7s %s  (not present)\n", sc.label, sc.dir)
-				continue
+		entries, present := readSkillDir(dir)
+		if !present {
+			fmt.Printf("%s  %s  (not present)\n", a, dir)
+			continue
+		}
+		fmt.Printf("%s  %s\n", a, dir)
+		if len(entries) == 0 {
+			fmt.Println("  (empty)")
+			continue
+		}
+		for _, e := range entries {
+			mark := "ok"
+			if e.broken {
+				mark = "BROKEN"
 			}
-			fmt.Printf("  %-7s %s\n", sc.label, sc.dir)
-			for _, e := range entries {
-				mark := "ok"
-				if e.broken {
-					mark = "BROKEN"
-				}
-				shadow := ""
-				if seen[e.name] {
-					shadow = "  (shadowed)"
-				}
-				fmt.Printf("    %-26s %-8s %s%s\n", e.name, mark, e.target, shadow)
-			}
-			for _, e := range entries {
-				seen[e.name] = true
-			}
+			fmt.Printf("  %-26s %-8s %s\n", e.name, mark, e.target)
 		}
 	}
 	return nil
