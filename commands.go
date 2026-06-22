@@ -16,6 +16,7 @@ var commands = []*cli.Command{
 	commandRoot,
 	commandCreate,
 	commandMigrate,
+	commandSkills,
 }
 
 var commandGet = &cli.Command{

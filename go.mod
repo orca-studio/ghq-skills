@@ -3,6 +3,7 @@ module github.com/x-motemen/ghq
 go 1.26.0
 
 require (
+	github.com/BurntSushi/toml v1.4.0
 	github.com/Songmu/gitconfig v0.2.2
 	github.com/mattn/go-isatty v0.0.22
 	github.com/motemen/go-colorine v0.0.0-20180816141035-45d19169413a

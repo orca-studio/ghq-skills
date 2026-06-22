@@ -1,0 +1,60 @@
+# `ghq skills` — agent skill management, the ghq way
+
+This fork adds a `skills` subcommand to ghq. Every skill stays a real git clone
+under the ghq root; a committed lockfile (`skills.lock.toml`) pins each skill to
+an upstream commit, and symlinks expose them in one manifest dir.
+
+Unlike `npx skills` (which packages content and records an md5 checksum), this
+keeps full git history — so "did upstream change?" is a real `git fetch` + SHA
+compare, not a hash mismatch.
+
+## Layout
+
+Everything lives under one tree — the ghq root:
+
+```
+~/ghq/                                      # ghq root (GHQ_ROOT)
+├─ github.com/<owner>/<repo>/...            # real clones (ghq owns)
+│         └─ skills/foo/SKILL.md
+└─ skills/                                  # manifest root — no .git
+          ├─ skills.lock.toml               # the manifest you commit
+          └─ foo -> ../github.com/<owner>/<repo>/skills/foo
+```
+
+The manifest root has no `.git`, so plain `ghq list` / `ghq rm` ignore it.
+Override it with `GHQ_SKILLS_ROOT`.
+
+## Usage
+
+A source is `owner/repo` (ghq shorthand), a full URL, or an SSH remote — and a
+repo may hold many skills under `skills/`. Select by name, like `npx skills`:
+
+```sh
+ghq skills get owner/repo --list                 # enumerate skills, don't lock
+ghq skills get owner/repo                         # lock ALL skills in the repo
+ghq skills get owner/repo --skill pdf --skill docx   # lock specific skills by name
+ghq skills add owner/repo                          # `add` is an alias for `get`
+ghq skills update [name]                            # pull, advance the lock
+ghq skills status                                   # show drift behind upstream
+ghq skills list                                     # locked skills + broken-link check
+ghq skills lock                                     # restore clones to pinned commits
+```
+
+## Design
+
+`ghq skills` reuses ghq's own machinery in-process — the getter for cloning and
+`LocalRepositoryFromURL` for path resolution — so there is no shelling out and
+no second binary. All new code is additive:
+
+- `cmd_skills.go` — the subcommand (the only touch to existing files is one line
+  registering `commandSkills` in `commands.go`).
+- `skills/` — self-contained package: lockfile, SKILL.md discovery, git helpers.
+
+This keeps rebasing onto `upstream` (x-motemen/ghq) trivial.
+
+## Tracking upstream ghq
+
+```sh
+git fetch upstream
+git rebase upstream/master      # additive changes rarely conflict
+```

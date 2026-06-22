@@ -1,3 +1,5 @@
+github.com/BurntSushi/toml v1.4.0 h1:kuoIxZQy2WRRk1pttg9asf+WVv6tWQuBNVmK8+nqPr0=
+github.com/BurntSushi/toml v1.4.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
 github.com/Songmu/gitconfig v0.2.2 h1:tiQY2KZqgdgjs1C7slWd31EB8NbItN7BOKxCIHSlK4Y=
 github.com/Songmu/gitconfig v0.2.2/go.mod h1:lZ0lKL6K+xvT+QzmmGxHQgOnneiWcbhGAV2DKI6PBpM=
 github.com/cli/go-gh/v2 v2.13.0 h1:jEHZu/VPVoIJkciK3pzZd3rbT8J90swsK5Ui4ewH1ys=
