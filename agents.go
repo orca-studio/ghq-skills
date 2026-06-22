@@ -166,17 +166,21 @@ type skillEntry struct {
 	broken       bool
 }
 
-// readSkillDir returns the skill links in dir (present=false if dir is absent).
+// readSkillDir returns the actual skills in dir (present=false if dir is absent).
+// A skill is a symlink (a wired skill link) or a real directory containing a
+// SKILL.md — anything else (.DS_Store, the lockfile, stray files) is ignored.
 func readSkillDir(dir string) (entries []skillEntry, present bool) {
 	des, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, false
 	}
 	for _, e := range des {
-		if e.Name() == "skills.lock.toml" {
-			continue
-		}
 		full := filepath.Join(dir, e.Name())
+		if e.Type()&os.ModeSymlink == 0 {
+			if !e.IsDir() || !fileExists(filepath.Join(full, "SKILL.md")) {
+				continue
+			}
+		}
 		target, _ := os.Readlink(full) // "" if not a symlink
 		_, statErr := os.Stat(full)
 		entries = append(entries, skillEntry{name: e.Name(), target: target, broken: statErr != nil})
