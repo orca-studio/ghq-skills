@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/mattn/go-isatty"
 	"github.com/urfave/cli/v3"
 	"github.com/x-motemen/ghq/skills"
 )
@@ -45,8 +48,9 @@ var commandSkillsGet = &cli.Command{
 	Usage:     "Clone a skill repo, lock it, and wire it into agent dirs (project by default)",
 	ArgsUsage: "<source>",
 	Flags: append([]cli.Flag{
-		&cli.StringSliceFlag{Name: "skill", Aliases: []string{"s"}, Usage: "select skills by name (repeatable; '*' = all). Default: all"},
+		&cli.StringSliceFlag{Name: "skill", Aliases: []string{"s"}, Usage: "select skills by name (repeatable; '*' = all). Skips the interactive picker"},
 		&cli.StringFlag{Name: "subdir", Usage: "select the skill at this subdir (disambiguates odd layouts)"},
+		&cli.BoolFlag{Name: "all", Aliases: []string{"A"}, Usage: "select every skill in the repo without prompting"},
 		&cli.BoolFlag{Name: "list", Aliases: []string{"l"}, Usage: "list available skills in the repo without locking"},
 		&cli.BoolFlag{Name: "update", Aliases: []string{"u"}, Usage: "pull if the repo is already cloned"},
 		&cli.BoolFlag{Name: "p", Usage: "clone with SSH"},
@@ -89,17 +93,30 @@ var commandSkillsGet = &cli.Command{
 			return nil
 		}
 
-		if names := cmd.StringSlice("skill"); len(names) > 0 {
+		names := cmd.StringSlice("skill")
+		sub := cmd.String("subdir")
+		explicit := len(names) > 0 || sub != ""
+		if len(names) > 0 {
 			found = skills.SelectByName(found, names)
 			if len(found) == 0 {
 				return fmt.Errorf("no skills matched --skill %v (try `ghq skills get %s --list`)", names, source)
 			}
 		}
-		if sub := cmd.String("subdir"); sub != "" {
+		if sub != "" {
 			found = skills.SelectBySubdir(found, sub)
 			if len(found) == 0 {
 				return fmt.Errorf("no SKILL.md under subdir %q", sub)
 			}
+		}
+		// With no explicit selection and several skills on offer, let the user
+		// pick interactively (like `npx skills`). --all, an explicit selection,
+		// or a non-interactive stdin all take the whole set without prompting.
+		if !explicit && !cmd.Bool("all") && len(found) > 1 {
+			sel, err := selectSkillsInteractive(found)
+			if err != nil {
+				return err
+			}
+			found = sel
 		}
 
 		lock, sc, err := loadSkillsLock(cmd)
@@ -502,6 +519,70 @@ func skillRepoPath(repo string) (string, error) {
 		return "", err
 	}
 	return local.FullPath, nil
+}
+
+// selectSkillsInteractive prompts the user to choose from the discovered skills,
+// the way `npx skills` does. On a non-interactive stdin it takes the whole set
+// (never blocks automation). Input is a comma/space-separated list of numbers
+// and/or names; empty input or "a"/"all" selects everything.
+func selectSkillsInteractive(found []skills.Found) ([]skills.Found, error) {
+	fd := os.Stdin.Fd()
+	if !isatty.IsTerminal(fd) && !isatty.IsCygwinTerminal(fd) {
+		return found, nil
+	}
+
+	fmt.Fprintf(os.Stderr, "Found %d skills:\n", len(found))
+	for i, f := range found {
+		loc := f.Subdir
+		if loc == "" {
+			loc = "."
+		}
+		fmt.Fprintf(os.Stderr, "  %2d  %-28s %s\n", i+1, f.Name, loc)
+	}
+	fmt.Fprint(os.Stderr, "Select skills (numbers/names, space or comma separated; Enter = all): ")
+
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	return parseSelection(line, found)
+}
+
+// parseSelection resolves a user's picker input against the discovered skills.
+// Empty input or "a"/"all" selects everything; otherwise tokens are numbers
+// (1-based, in listing order) and/or skill names. Duplicates collapse.
+func parseSelection(line string, found []skills.Found) ([]skills.Found, error) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.EqualFold(line, "a") || strings.EqualFold(line, "all") {
+		return found, nil
+	}
+
+	byName := map[string]skills.Found{}
+	for _, f := range found {
+		byName[f.Name] = f
+	}
+	seen := map[string]bool{}
+	var out []skills.Found
+	for _, tok := range strings.FieldsFunc(line, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+		var f skills.Found
+		if n, err := strconv.Atoi(tok); err == nil {
+			if n < 1 || n > len(found) {
+				return nil, fmt.Errorf("selection %d out of range (1-%d)", n, len(found))
+			}
+			f = found[n-1]
+		} else {
+			hit, ok := byName[tok]
+			if !ok {
+				return nil, fmt.Errorf("no skill named %q", tok)
+			}
+			f = hit
+		}
+		if !seen[f.Name] {
+			seen[f.Name] = true
+			out = append(out, f)
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("no skills selected")
+	}
+	return out, nil
 }
 
 func shortSHA(sha string) string {

@@ -97,7 +97,8 @@ also lives under `<ghq root>/skills` (override with `GHQ_SKILLS_ROOT`).
 
 ```sh
 # Inside a project (project scope is the default):
-ghq skills get larksuite/cli                 # clone, lock ALL its skills, wire ./.claude/skills
+ghq skills get larksuite/cli                 # clone, pick skills interactively, wire ./.claude/skills
+ghq skills get larksuite/cli --all           # skip the picker: lock ALL its skills
 ghq skills get larksuite/cli --skill lark-base --skill lark-doc   # only these
 ghq skills get larksuite/cli --list          # enumerate skills, lock nothing
 ghq skills list                              # what claude-code loads here
@@ -108,7 +109,12 @@ ghq skills get owner/repo -g                 # lock + wire into ~/.claude/skills
 ```
 
 A source is `owner/repo` (ghq shorthand), a full URL, or an SSH remote. A repo may
-hold many skills under `skills/`; select by name like `npx skills`.
+hold many skills. Discovery prefers a Claude Code plugin manifest
+(`.claude-plugin/plugin.json`) — the same source `npx skills` reads — and otherwise
+walks the tree for `SKILL.md` (including category-nested layouts like
+`skills/<category>/<name>/`). When several are found and you don't pass `--skill`
+or `--all`, an interactive picker lets you choose (numbers or names); a
+non-interactive stdin takes them all.
 
 ## Commands
 
@@ -122,8 +128,8 @@ hold many skills under `skills/`; select by name like `npx skills`.
 | `lock` | check out each clone at its pinned commit |
 | `restore` | clone + pin + wire the whole lockfile (fresh checkouts); `--wire-only` re-wires without clone/checkout |
 
-Common flags: `--skill <name>` (repeatable; `*`), `--subdir <path>`, `--lockfile <path>`,
-`-g/--global`, `-a/--agent`, `-y/--yes`.
+Common flags: `--skill <name>` (repeatable; `*`), `--all/-A` (take every skill, no picker),
+`--subdir <path>`, `--lockfile <path>`, `-g/--global`, `-a/--agent`, `-y/--yes`.
 
 ### `list` vs `manifest`
 
