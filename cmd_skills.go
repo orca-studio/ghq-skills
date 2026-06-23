@@ -512,7 +512,7 @@ func scopeHint(cmd *cli.Command) string {
 			return ""
 		}
 		if n := lockedCount(filepath.Join(root, "skills.lock.toml")); n > 0 {
-			return fmt.Sprintf("%d skill(s) are locked in project scope — drop `-g`?", n)
+			return fmt.Sprintf("%d skill(s) are locked in project scope (this repo) — re-run without `-g`.", n)
 		}
 		return ""
 	}
@@ -526,7 +526,7 @@ func scopeHint(cmd *cli.Command) string {
 		return ""
 	}
 	if n := lockedCount(p); n > 0 {
-		return fmt.Sprintf("%d skill(s) are locked globally — did you mean `-g`?", n)
+		return fmt.Sprintf("inside a repo, ghq skills uses project scope by default; %d skill(s) are locked globally — re-run with `-g`.", n)
 	}
 	return ""
 }

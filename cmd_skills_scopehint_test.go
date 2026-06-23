@@ -35,8 +35,8 @@ func TestScopeHintProjectSuggestsGlobal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if !strings.Contains(out, "did you mean `-g`?") {
-		t.Errorf("expected -g hint, got:\n%s", out)
+	if !strings.Contains(out, "project scope by default") || !strings.Contains(out, "re-run with `-g`") {
+		t.Errorf("expected scope-explaining -g hint, got:\n%s", out)
 	}
 }
 
@@ -58,7 +58,7 @@ func TestScopeHintNoSuggestionOutsideRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if strings.Contains(out, "did you mean") || strings.Contains(out, "drop `-g`") {
+	if strings.Contains(out, "re-run with") || strings.Contains(out, "re-run without") {
 		t.Errorf("explicit --lockfile should never hint, got:\n%s", out)
 	}
 }
