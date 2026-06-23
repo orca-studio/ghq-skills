@@ -160,6 +160,9 @@ var commandSkillsUpdate = &cli.Command{
 			return err
 		}
 		if len(lock.Skill) == 0 {
+			if h := scopeHint(cmd); h != "" {
+				return fmt.Errorf("nothing locked in %s\n%s", sc.lockPath, h)
+			}
 			return errors.New("nothing locked yet (run `ghq skills get` first)")
 		}
 		only := cmd.Args().First()
@@ -221,6 +224,9 @@ var commandSkillsStatus = &cli.Command{
 		}
 		if len(lock.Skill) == 0 {
 			fmt.Println("no skills locked")
+			if h := scopeHint(cmd); h != "" {
+				fmt.Println(h)
+			}
 			return nil
 		}
 		fetched := map[string]bool{}
@@ -283,6 +289,9 @@ var commandSkillsManifest = &cli.Command{
 		}
 		if len(lock.Skill) == 0 {
 			fmt.Println("no skills locked")
+			if h := scopeHint(cmd); h != "" {
+				fmt.Println(h)
+			}
 			return nil
 		}
 		for _, s := range lock.Skill {
@@ -313,6 +322,9 @@ var commandSkillsLock = &cli.Command{
 		}
 		if len(lock.Skill) == 0 {
 			fmt.Println("no skills locked")
+			if h := scopeHint(cmd); h != "" {
+				fmt.Println(h)
+			}
 			return nil
 		}
 		done := map[string]bool{}
@@ -482,6 +494,49 @@ func globalLockPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(base, "skills", "skills.lock.toml"), nil
+}
+
+// scopeHint suggests trying the other scope when the current scope's lock turned
+// up empty but the other scope actually has skills locked. It returns "" when
+// there is nothing useful to say — an explicit --lockfile, no enclosing repo, or
+// the other scope is empty too. It never auto-switches scope (that would mutate
+// the wrong lockfile, and would hang non-interactively); it only advises.
+func scopeHint(cmd *cli.Command) string {
+	if cmd.String("lockfile") != "" {
+		return ""
+	}
+	if cmd.Bool("global") {
+		// Currently global: suggest project only if we're in a repo whose lock has skills.
+		root := findProjectRoot()
+		if root == "" {
+			return ""
+		}
+		if n := lockedCount(filepath.Join(root, "skills.lock.toml")); n > 0 {
+			return fmt.Sprintf("%d skill(s) are locked in project scope — drop `-g`?", n)
+		}
+		return ""
+	}
+	// Currently project: only meaningful when project scope actually applied
+	// (i.e. inside a repo; outside one, resolveScope already fell back to global).
+	if findProjectRoot() == "" {
+		return ""
+	}
+	p, err := globalLockPath()
+	if err != nil {
+		return ""
+	}
+	if n := lockedCount(p); n > 0 {
+		return fmt.Sprintf("%d skill(s) are locked globally — did you mean `-g`?", n)
+	}
+	return ""
+}
+
+func lockedCount(path string) int {
+	lock, err := skills.LoadLock(path)
+	if err != nil {
+		return 0
+	}
+	return len(lock.Skill)
 }
 
 // loadSkillsLock resolves the scope and loads its lockfile.
