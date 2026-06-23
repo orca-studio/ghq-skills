@@ -127,13 +127,25 @@ non-interactive stdin takes them all.
 | `manifest` | the canonical lockfile — the installed/pinned set |
 | `lock` | check out each clone at its pinned commit |
 | `restore` | clone + pin + wire the whole lockfile (fresh checkouts); `--wire-only` re-wires without clone/checkout |
-| `rm` (alias `remove`) `<name>…` | remove skills: drop their lockfile entries + symlinks — **never the clone** |
+| `rm` (alias `remove`) `<name>\|<source>…` | remove skills: drop their lockfile entries + symlinks — **never the clone** |
 
 `rm` is the inverse of `get`'s *lock + wire* half, not its *clone* half: it deletes
 the `[[skill]]` entries and the store/agent symlinks, but leaves the git clone under
 `~/ghq/...` alone (sources are ghq's to manage — prune one with `ghq rm <owner>/<repo>`).
 When you remove the last skill referencing a clone, it says so but won't delete it.
-A typo'd name aborts the whole call, so a removal never half-applies.
+A typo'd argument aborts the whole call, so a removal never half-applies.
+
+Each argument is a **skill name** or a **source** (`owner/repo`, URL) — mirroring
+`get`. A source selects every locked skill from that repo; when several match and
+stdin is a TTY, the same interactive picker as `get` lets you choose which to remove
+(`--all/-A` removes them all; `--skill <name>` narrows by name):
+
+```sh
+ghq skills rm lark-base               # one skill by name
+ghq skills rm larksuite/cli           # pick which of the repo's skills to drop
+ghq skills rm larksuite/cli -A        # drop all of them
+ghq skills rm larksuite/cli -s lark-base -s lark-doc   # just these
+```
 
 Common flags: `--skill <name>` (repeatable; `*`), `--all/-A` (take every skill, no picker),
 `--subdir <path>`, `--lockfile <path>`, `-g/--global`, `-a/--agent`, `-y/--yes`.

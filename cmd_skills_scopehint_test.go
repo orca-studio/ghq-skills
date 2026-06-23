@@ -23,10 +23,13 @@ func writeGlobalLock(t *testing.T) {
 // In a repo with no project lock, project-scope `status` should point the user
 // at the populated global scope instead of silently reporting nothing.
 func TestScopeHintProjectSuggestsGlobal(t *testing.T) {
-	dir := newTempDir(t) // chdir's into a temp dir; restored on cleanup
+	// t.Chdir keeps us inside the isolated repo for the whole test (unlike
+	// newTempDir, which restores the cwd on return — see its defer).
+	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Chdir(dir)
 	writeGlobalLock(t)
 
 	out, _, err := capture(func() {

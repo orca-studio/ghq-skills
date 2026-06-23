@@ -5,10 +5,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/x-motemen/ghq/skills"
 )
+
+// useTempGhqRoot points ghq's local-repository root at an empty temp dir so the
+// source resolver (newURL + LocalRepositoryFromURL) walks a controlled tree.
+func useTempGhqRoot(t *testing.T) {
+	t.Helper()
+	setEnv(t, envGhqRoot, t.TempDir())
+	orig := _localRepositoryRoots
+	t.Cleanup(func() { _localRepositoryRoots = orig; localRepoOnce = &sync.Once{} })
+	_localRepositoryRoots = nil
+	localRepoOnce = &sync.Once{}
+}
 
 func mustSymlink(t *testing.T, target, link string) {
 	t.Helper()
@@ -102,6 +114,70 @@ func TestSkillsRm(t *testing.T) {
 	}
 	if strings.Contains(out, "github.com/larksuite/cli is now unreferenced") {
 		t.Errorf("larksuite/cli is still referenced; should not be noted:\n%s", out)
+	}
+}
+
+// rm accepts a source (owner/repo): with a non-TTY stdin it removes every locked
+// skill from that repo, leaving other repos' skills and all clones untouched.
+func TestSkillsRmBySource(t *testing.T) {
+	newTempDir(t)
+	useTempGhqRoot(t)
+	store := t.TempDir()
+	setEnv(t, "GHQ_SKILLS_ROOT", store)
+	setEnv(t, "GHQ_AGENT_CLAUDE_CODE", t.TempDir())
+
+	lock := &skills.Lock{Skill: []skills.Skill{
+		{Name: "foo", Repo: "github.com/acme/kit", Subdir: "skills/foo", Link: "foo"},
+		{Name: "bar", Repo: "github.com/acme/kit", Subdir: "skills/bar", Link: "bar"},
+		{Name: "solo", Repo: "github.com/other/repo", Subdir: "solo", Link: "solo"},
+	}}
+	if err := lock.Save(filepath.Join(store, "skills.lock.toml")); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, err := capture(func() {
+		if e := newApp().Run(context.Background(), []string{"ghq", "skills", "rm", "acme/kit", "-g"}); e != nil {
+			t.Errorf("rm acme/kit: %v", e)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := skills.LoadLock(filepath.Join(store, "skills.lock.toml"))
+	if len(got.Skill) != 1 || got.Skill[0].Name != "solo" {
+		t.Fatalf("lock after rm source = %+v, want only solo", got.Skill)
+	}
+	if !strings.Contains(out, "removed foo") || !strings.Contains(out, "removed bar") {
+		t.Errorf("expected both acme/kit skills removed, got:\n%s", out)
+	}
+	if !strings.Contains(out, "github.com/acme/kit is now unreferenced") {
+		t.Errorf("expected unreferenced-clone note for acme/kit, got:\n%s", out)
+	}
+}
+
+// --skill narrows a source to specific names without prompting.
+func TestSkillsRmSourceWithSkillFlag(t *testing.T) {
+	newTempDir(t)
+	useTempGhqRoot(t)
+	store := t.TempDir()
+	setEnv(t, "GHQ_SKILLS_ROOT", store)
+	setEnv(t, "GHQ_AGENT_CLAUDE_CODE", t.TempDir())
+
+	lock := &skills.Lock{Skill: []skills.Skill{
+		{Name: "foo", Repo: "github.com/acme/kit", Link: "foo"},
+		{Name: "bar", Repo: "github.com/acme/kit", Link: "bar"},
+	}}
+	if err := lock.Save(filepath.Join(store, "skills.lock.toml")); err != nil {
+		t.Fatal(err)
+	}
+
+	if e := newApp().Run(context.Background(), []string{"ghq", "skills", "rm", "acme/kit", "--skill", "foo", "-g"}); e != nil {
+		t.Fatalf("rm --skill: %v", e)
+	}
+	got, _ := skills.LoadLock(filepath.Join(store, "skills.lock.toml"))
+	if len(got.Skill) != 1 || got.Skill[0].Name != "bar" {
+		t.Fatalf("lock after rm --skill foo = %+v, want only bar", got.Skill)
 	}
 }
 

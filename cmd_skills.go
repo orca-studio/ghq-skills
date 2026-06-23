@@ -432,21 +432,28 @@ var commandSkillsRm = &cli.Command{
 	Name:      "rm",
 	Aliases:   []string{"remove"},
 	Usage:     "Remove locked skills: drop lockfile entries and symlinks (never the clone)",
-	ArgsUsage: "<name>...",
+	ArgsUsage: "<name>|<source>...",
 	Description: `
-    Removes one or more skills from the resolved scope (project by default, -g
-    global, or --lockfile): it deletes their lockfile entries, the canonical
-    store symlinks, and the agent-dir symlinks chosen by -a.
+    Removes skills from the resolved scope (project by default, -g global, or
+    --lockfile): it deletes their lockfile entries, the canonical store symlinks,
+    and the agent-dir symlinks chosen by -a.
+
+    Each argument is either a skill name, or a source (owner/repo, URL) — the
+    mirror of 'ghq skills get'. A source selects every locked skill from that
+    repo; when several match and stdin is a TTY, an interactive picker lets you
+    choose which to remove (--all/-A removes them all, --skill narrows by name).
 
     It NEVER deletes the git clone under the ghq root — sources are ghq's to
     manage; remove one deliberately with 'ghq rm <owner>/<repo>'. When removing
     the last skill that referenced a clone, it notes the clone is now unreferenced
     but leaves it in place. Re-add a removed skill with 'ghq skills get'.`,
-	Flags: append(agentFlags(), lockfileFlag()),
+	Flags: append(agentFlags(), lockfileFlag(),
+		&cli.StringSliceFlag{Name: "skill", Aliases: []string{"s"}, Usage: "when an arg is a source, restrict to these skill names (repeatable)"},
+		&cli.BoolFlag{Name: "all", Aliases: []string{"A"}, Usage: "when an arg is a source, remove every matching skill without prompting"}),
 	Action: func(ctx context.Context, cmd *cli.Command) error {
-		names := cmd.Args().Slice()
-		if len(names) == 0 {
-			return errors.New("usage: ghq skills rm <name>...")
+		args := cmd.Args().Slice()
+		if len(args) == 0 {
+			return errors.New("usage: ghq skills rm <name>|<source>...")
 		}
 		lock, sc, err := loadSkillsLock(cmd)
 		if err != nil {
@@ -458,23 +465,53 @@ var commandSkillsRm = &cli.Command{
 			}
 			return errors.New("nothing locked yet (run `ghq skills get` first)")
 		}
-		// Resolve every requested name first; refuse the whole op if any is absent
-		// so a typo never half-applies.
+		// SSH vs HTTPS doesn't change the resolved host/owner/repo path we match on.
+		const ssh = false
+		byName := cmd.StringSlice("skill")
+		all := cmd.Bool("all")
+
+		// Resolve every argument first (name or source); refuse the whole op if any
+		// matches nothing so a typo never half-applies. Targets dedup by name.
 		var targets []skills.Skill
+		seen := map[string]bool{}
 		var missing []string
-		for _, name := range names {
-			if s, ok := lock.Find(name); ok {
-				targets = append(targets, s)
-			} else {
-				missing = append(missing, name)
+		for _, arg := range args {
+			matched := resolveRef(lock, arg, ssh)
+			if len(matched) == 0 {
+				missing = append(missing, arg)
+				continue
+			}
+			if len(byName) > 0 {
+				matched = filterSkillsByName(matched, byName)
+				if len(matched) == 0 {
+					return fmt.Errorf("no skills from %s matched --skill %v", arg, byName)
+				}
+			}
+			// A source matching several skills gets the interactive picker, unless
+			// --all, an explicit --skill, a single match, or a non-TTY stdin.
+			if !all && len(byName) == 0 && len(matched) > 1 {
+				sel, err := selectLockedInteractive(arg, matched)
+				if err != nil {
+					return err
+				}
+				matched = sel
+			}
+			for _, s := range matched {
+				if !seen[s.Name] {
+					seen[s.Name] = true
+					targets = append(targets, s)
+				}
 			}
 		}
 		if len(missing) > 0 {
 			msg := fmt.Sprintf("not locked in %s: %s", sc.lockPath, strings.Join(missing, ", "))
-			if h := scopeHint(cmd); h != "" {
+			if h := crossScopeRefHint(cmd, missing, ssh); h != "" {
 				msg += "\n" + h
 			}
 			return errors.New(msg)
+		}
+		if len(targets) == 0 {
+			return errors.New("no skills selected to remove")
 		}
 		// Remove store symlinks + lockfile entries; gather link names to unwire.
 		var linkNames []string
@@ -496,12 +533,12 @@ var commandSkillsRm = &cli.Command{
 			return err
 		}
 		// Sources are ghq's to manage: flag, but never delete, a now-orphaned clone.
-		seen := map[string]bool{}
+		noted := map[string]bool{}
 		for _, s := range targets {
-			if seen[s.Repo] || lock.Uses(s.Repo) > 0 {
+			if noted[s.Repo] || lock.Uses(s.Repo) > 0 {
 				continue
 			}
-			seen[s.Repo] = true
+			noted[s.Repo] = true
 			fmt.Printf("note: clone %s is now unreferenced; `ghq rm %s` to delete it\n", s.Repo, s.Repo)
 		}
 		return nil
@@ -577,39 +614,107 @@ func globalLockPath() (string, error) {
 	return filepath.Join(base, "skills", "skills.lock.toml"), nil
 }
 
-// scopeHint suggests trying the other scope when the current scope's lock turned
-// up empty but the other scope actually has skills locked. It returns "" when
-// there is nothing useful to say — an explicit --lockfile, no enclosing repo, or
-// the other scope is empty too. It never auto-switches scope (that would mutate
-// the wrong lockfile, and would hang non-interactively); it only advises.
-func scopeHint(cmd *cli.Command) string {
+// otherScope returns the lockfile path of the scope NOT currently selected and
+// the flag-flip phrasing to reach it ("re-run with `-g`" / "without `-g`"). It
+// returns ("", "") when there is no meaningful other scope: an explicit
+// --lockfile, or a project scope with no enclosing repo. It never switches scope
+// itself — callers only advise.
+func otherScope(cmd *cli.Command) (lockPath, flip string) {
 	if cmd.String("lockfile") != "" {
-		return ""
+		return "", ""
 	}
 	if cmd.Bool("global") {
-		// Currently global: suggest project only if we're in a repo whose lock has skills.
 		root := findProjectRoot()
 		if root == "" {
-			return ""
+			return "", ""
 		}
-		if n := lockedCount(filepath.Join(root, "skills.lock.toml")); n > 0 {
-			return fmt.Sprintf("%d skill(s) are locked in project scope (this repo) — re-run without `-g`.", n)
-		}
-		return ""
+		return filepath.Join(root, "skills.lock.toml"), "re-run without `-g`"
 	}
 	// Currently project: only meaningful when project scope actually applied
 	// (i.e. inside a repo; outside one, resolveScope already fell back to global).
 	if findProjectRoot() == "" {
-		return ""
+		return "", ""
 	}
 	p, err := globalLockPath()
 	if err != nil {
+		return "", ""
+	}
+	return p, "re-run with `-g`"
+}
+
+// scopeHint suggests the other scope when the current scope's lock turned up
+// empty but the other scope actually has skills. It never auto-switches scope
+// (that would mutate the wrong lockfile and hang non-interactively); it advises.
+func scopeHint(cmd *cli.Command) string {
+	p, flip := otherScope(cmd)
+	if p == "" {
 		return ""
 	}
-	if n := lockedCount(p); n > 0 {
-		return fmt.Sprintf("inside a repo, ghq skills uses project scope by default; %d skill(s) are locked globally — re-run with `-g`.", n)
+	n := lockedCount(p)
+	if n == 0 {
+		return ""
 	}
-	return ""
+	if cmd.Bool("global") {
+		return fmt.Sprintf("%d skill(s) are locked in project scope (this repo) — %s.", n, flip)
+	}
+	return fmt.Sprintf("inside a repo, ghq skills uses project scope by default; %d skill(s) are locked globally — %s.", n, flip)
+}
+
+// crossScopeRefHint is the precise counterpart for "name/source not found here":
+// it checks whether the specific refs the user asked for actually resolve in the
+// other scope, and only then suggests the flag flip. Unlike scopeHint it does not
+// fire merely because the other scope is non-empty, so it won't mislead when the
+// current scope has its own (different) skills.
+func crossScopeRefHint(cmd *cli.Command, refs []string, ssh bool) string {
+	p, flip := otherScope(cmd)
+	if p == "" {
+		return ""
+	}
+	other, err := skills.LoadLock(p)
+	if err != nil || len(other.Skill) == 0 {
+		return ""
+	}
+	var found []string
+	for _, r := range refs {
+		if len(resolveRef(other, r, ssh)) > 0 {
+			found = append(found, r)
+		}
+	}
+	if len(found) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s locked in the other scope — %s.", strings.Join(found, ", "), flip)
+}
+
+// matchBySource returns the locked skills whose repo equals the canonical repo
+// path that ref resolves to (e.g. "larksuite/cli" -> "github.com/larksuite/cli").
+// It resolves the path without cloning; nil if ref doesn't parse or nothing matches.
+func matchBySource(lock *skills.Lock, ref string, ssh bool) []skills.Skill {
+	u, err := newURL(ref, ssh, false)
+	if err != nil {
+		return nil
+	}
+	lr, err := LocalRepositoryFromURL(u, false)
+	if err != nil {
+		return nil
+	}
+	var out []skills.Skill
+	for _, s := range lock.Skill {
+		if s.Repo == lr.RelPath {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// resolveRef maps one rm argument to locked skills: an exact skill-name match
+// takes precedence; otherwise the arg is treated as a source and matches every
+// locked skill from that repo. Returns nil when neither applies.
+func resolveRef(lock *skills.Lock, ref string, ssh bool) []skills.Skill {
+	if s, ok := lock.Find(ref); ok {
+		return []skills.Skill{s}
+	}
+	return matchBySource(lock, ref, ssh)
 }
 
 func lockedCount(path string) int {
@@ -679,6 +784,46 @@ func selectSkillsInteractive(found []skills.Found) ([]skills.Found, error) {
 
 	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	return parseSelection(line, found)
+}
+
+// filterSkillsByName keeps only the locked skills whose name is in names.
+func filterSkillsByName(in []skills.Skill, names []string) []skills.Skill {
+	want := map[string]bool{}
+	for _, n := range names {
+		want[n] = true
+	}
+	var out []skills.Skill
+	for _, s := range in {
+		if want[s.Name] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// selectLockedInteractive lets the user pick which of a source's locked skills to
+// remove, reusing the same picker as 'get'. A non-TTY stdin selects them all.
+func selectLockedInteractive(source string, locked []skills.Skill) ([]skills.Skill, error) {
+	found := make([]skills.Found, len(locked))
+	for i, s := range locked {
+		found[i] = skills.Found{Name: s.Name, Subdir: s.Subdir}
+	}
+	fmt.Fprintf(os.Stderr, "%s has %d locked skill(s) — choose which to remove:\n", source, len(locked))
+	sel, err := selectSkillsInteractive(found)
+	if err != nil {
+		return nil, err
+	}
+	pick := map[string]bool{}
+	for _, f := range sel {
+		pick[f.Name] = true
+	}
+	var out []skills.Skill
+	for _, s := range locked {
+		if pick[s.Name] {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
 
 // parseSelection resolves a user's picker input against the discovered skills.
