@@ -59,3 +59,37 @@ func (l *Lock) Upsert(s Skill) {
 	}
 	l.Skill = append(l.Skill, s)
 }
+
+// Find returns the entry with the given name, and whether it was present.
+func (l *Lock) Find(name string) (Skill, bool) {
+	for _, s := range l.Skill {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return Skill{}, false
+}
+
+// Remove drops the entry with the given name, reporting whether one was removed.
+// It only edits the manifest; symlinks and clones are the caller's concern.
+func (l *Lock) Remove(name string) bool {
+	for i := range l.Skill {
+		if l.Skill[i].Name == name {
+			l.Skill = append(l.Skill[:i], l.Skill[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// Uses reports how many entries reference the given repo — used to tell whether
+// removing a skill leaves its clone unreferenced.
+func (l *Lock) Uses(repo string) int {
+	n := 0
+	for _, s := range l.Skill {
+		if s.Repo == repo {
+			n++
+		}
+	}
+	return n
+}

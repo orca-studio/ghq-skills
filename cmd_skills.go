@@ -39,6 +39,7 @@ var commandSkills = &cli.Command{
 		commandSkillsManifest,
 		commandSkillsLock,
 		commandSkillsRestore,
+		commandSkillsRm,
 	},
 }
 
@@ -266,7 +267,7 @@ var commandSkillsList = &cli.Command{
     (default $GHQ_DEFAULT_AGENT, or 'all').
 
     For the installed/pinned set, see 'ghq skills manifest'.`,
-	Flags:  []cli.Flag{agentSelectFlag(), globalFlag()},
+	Flags: []cli.Flag{agentSelectFlag(), globalFlag()},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		return listAgents(cmd)
 	},
@@ -312,9 +313,9 @@ var commandSkillsManifest = &cli.Command{
 }
 
 var commandSkillsLock = &cli.Command{
-	Name:   "lock",
-	Usage:  "Check out each clone at its pinned commit (restore locked state)",
-	Flags:  []cli.Flag{lockfileFlag(), globalFlag()},
+	Name:  "lock",
+	Usage: "Check out each clone at its pinned commit (restore locked state)",
+	Flags: []cli.Flag{lockfileFlag(), globalFlag()},
 	Action: func(ctx context.Context, cmd *cli.Command) error {
 		lock, _, err := loadSkillsLock(cmd)
 		if err != nil {
@@ -424,6 +425,86 @@ var commandSkillsRestore = &cli.Command{
 			}
 		}
 		return fanOutToAgents(cmd, sc, links)
+	},
+}
+
+var commandSkillsRm = &cli.Command{
+	Name:      "rm",
+	Aliases:   []string{"remove"},
+	Usage:     "Remove locked skills: drop lockfile entries and symlinks (never the clone)",
+	ArgsUsage: "<name>...",
+	Description: `
+    Removes one or more skills from the resolved scope (project by default, -g
+    global, or --lockfile): it deletes their lockfile entries, the canonical
+    store symlinks, and the agent-dir symlinks chosen by -a.
+
+    It NEVER deletes the git clone under the ghq root — sources are ghq's to
+    manage; remove one deliberately with 'ghq rm <owner>/<repo>'. When removing
+    the last skill that referenced a clone, it notes the clone is now unreferenced
+    but leaves it in place. Re-add a removed skill with 'ghq skills get'.`,
+	Flags: append(agentFlags(), lockfileFlag()),
+	Action: func(ctx context.Context, cmd *cli.Command) error {
+		names := cmd.Args().Slice()
+		if len(names) == 0 {
+			return errors.New("usage: ghq skills rm <name>...")
+		}
+		lock, sc, err := loadSkillsLock(cmd)
+		if err != nil {
+			return err
+		}
+		if len(lock.Skill) == 0 {
+			if h := scopeHint(cmd); h != "" {
+				return fmt.Errorf("nothing locked in %s\n%s", sc.lockPath, h)
+			}
+			return errors.New("nothing locked yet (run `ghq skills get` first)")
+		}
+		// Resolve every requested name first; refuse the whole op if any is absent
+		// so a typo never half-applies.
+		var targets []skills.Skill
+		var missing []string
+		for _, name := range names {
+			if s, ok := lock.Find(name); ok {
+				targets = append(targets, s)
+			} else {
+				missing = append(missing, name)
+			}
+		}
+		if len(missing) > 0 {
+			msg := fmt.Sprintf("not locked in %s: %s", sc.lockPath, strings.Join(missing, ", "))
+			if h := scopeHint(cmd); h != "" {
+				msg += "\n" + h
+			}
+			return errors.New(msg)
+		}
+		// Remove store symlinks + lockfile entries; gather link names to unwire.
+		var linkNames []string
+		for _, s := range targets {
+			if sc.storeRoot != "" {
+				p := filepath.Join(sc.storeRoot, s.Link)
+				if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+					_ = os.Remove(p)
+				}
+			}
+			lock.Remove(s.Name)
+			linkNames = append(linkNames, s.Link)
+			fmt.Printf("removed %-24s (%s)\n", s.Name, s.Repo)
+		}
+		if err := lock.Save(sc.lockPath); err != nil {
+			return err
+		}
+		if err := unwireFromAgents(cmd, sc, linkNames); err != nil {
+			return err
+		}
+		// Sources are ghq's to manage: flag, but never delete, a now-orphaned clone.
+		seen := map[string]bool{}
+		for _, s := range targets {
+			if seen[s.Repo] || lock.Uses(s.Repo) > 0 {
+				continue
+			}
+			seen[s.Repo] = true
+			fmt.Printf("note: clone %s is now unreferenced; `ghq rm %s` to delete it\n", s.Repo, s.Repo)
+		}
+		return nil
 	},
 }
 

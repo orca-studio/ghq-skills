@@ -127,6 +127,13 @@ non-interactive stdin takes them all.
 | `manifest` | the canonical lockfile — the installed/pinned set |
 | `lock` | check out each clone at its pinned commit |
 | `restore` | clone + pin + wire the whole lockfile (fresh checkouts); `--wire-only` re-wires without clone/checkout |
+| `rm` (alias `remove`) `<name>…` | remove skills: drop their lockfile entries + symlinks — **never the clone** |
+
+`rm` is the inverse of `get`'s *lock + wire* half, not its *clone* half: it deletes
+the `[[skill]]` entries and the store/agent symlinks, but leaves the git clone under
+`~/ghq/...` alone (sources are ghq's to manage — prune one with `ghq rm <owner>/<repo>`).
+When you remove the last skill referencing a clone, it says so but won't delete it.
+A typo'd name aborts the whole call, so a removal never half-applies.
 
 Common flags: `--skill <name>` (repeatable; `*`), `--all/-A` (take every skill, no picker),
 `--subdir <path>`, `--lockfile <path>`, `-g/--global`, `-a/--agent`, `-y/--yes`.

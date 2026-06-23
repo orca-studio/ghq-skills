@@ -72,10 +72,11 @@ func agentDir(name string, global bool) (string, error) {
 }
 
 // resolveAgents decides which agents to fan out to:
-//   -a all      -> every $GHQ_SUPPORTED_AGENTS
-//   -a none     -> none (canonical store only)
-//   -a x -a y   -> those agents
-//   (omitted)   -> $GHQ_DEFAULT_AGENT
+//
+//	-a all      -> every $GHQ_SUPPORTED_AGENTS
+//	-a none     -> none (canonical store only)
+//	-a x -a y   -> those agents
+//	(omitted)   -> $GHQ_DEFAULT_AGENT
 func resolveAgents(cmd *cli.Command) []string {
 	names := cmd.StringSlice("agent")
 	if len(names) == 0 {
@@ -151,6 +152,56 @@ func fanOutToAgents(cmd *cli.Command, sc scope, links []skillLink) error {
 			}
 		}
 		fmt.Printf("wired %d skill(s) -> %s (%s)\n", len(links), dir, a)
+	}
+	return nil
+}
+
+// unwireFromAgents removes the named skill symlinks from each selected agent's
+// dir at the invocation's scope — the inverse of fanOutToAgents. It only ever
+// deletes symlinks it could have placed: a missing link or dir is skipped, and a
+// real (non-symlink) entry a user dropped in is kept with a note. It never
+// touches the clones the links point at.
+func unwireFromAgents(cmd *cli.Command, sc scope, linkNames []string) error {
+	agents := resolveAgents(cmd)
+	if len(agents) == 0 {
+		return nil
+	}
+	for _, a := range agents {
+		var (
+			dir string
+			err error
+		)
+		switch {
+		case sc.agentGlobal:
+			dir, err = agentDir(a, true)
+		case sc.projectRoot != "":
+			dir, err = agentProjectDir(a, sc.projectRoot)
+		default:
+			dir, err = agentDir(a, false)
+		}
+		if err != nil {
+			return err
+		}
+		if !dirExists(dir) {
+			continue
+		}
+		n := 0
+		for _, name := range linkNames {
+			p := filepath.Join(dir, name)
+			fi, lerr := os.Lstat(p)
+			if lerr != nil {
+				continue // not wired here
+			}
+			if fi.Mode()&os.ModeSymlink == 0 {
+				fmt.Printf("kept %s (not a symlink) in %s\n", name, dir)
+				continue
+			}
+			if err := os.Remove(p); err != nil {
+				return err
+			}
+			n++
+		}
+		fmt.Printf("unwired %d skill(s) from %s (%s)\n", n, dir, a)
 	}
 	return nil
 }
